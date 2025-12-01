@@ -1,0 +1,80 @@
+# mise configuration for Flatcar System Extensions
+# https://mise.jdx.dev/
+
+[env]
+VERSION = "v3.5.21"
+ARCH = "x86-64"
+OUTPUT_DIR = "{{cwd}}"
+
+[tasks.build]
+description = "Build the etcd sysext"
+run = """
+./etcd.sysext/create.sh --version ${VERSION} --arch ${ARCH} --output ${OUTPUT_DIR}
+"""
+depends = ["check"]
+
+[tasks.etcd]
+alias = "build"
+
+[tasks.clean]
+description = "Remove generated sysext images"
+run = """
+echo "Cleaning etcd sysext images..."
+rm -f ${OUTPUT_DIR}/etcd-*.raw
+echo "Cleaned."
+"""
+
+[tasks.list-versions]
+description = "List available etcd versions"
+run = """
+cd etcd.sysext && ./create.sh --list-versions
+"""
+
+[tasks.install]
+description = "Install built sysext to /opt/extensions"
+run = """
+if [ ! -f ${OUTPUT_DIR}/etcd-*-${ARCH}.raw ]; then
+  echo "ERROR: No etcd sysext image found. Run 'mise run build' first."
+  exit 1
+fi
+echo "Installing etcd sysext..."
+sudo mkdir -p /opt/extensions/etcd
+sudo cp ${OUTPUT_DIR}/etcd-*-${ARCH}.raw /opt/extensions/etcd/
+echo "Installed to /opt/extensions/etcd/"
+echo ""
+echo "To activate the extension:"
+echo "  sudo ln -sf /opt/extensions/etcd/\\$(basename ${OUTPUT_DIR}/etcd-*-${ARCH}.raw) /etc/extensions/etcd.raw"
+echo "  sudo systemd-sysext refresh"
+"""
+
+[tasks.check]
+description = "Check build dependencies"
+run = """
+echo "Checking dependencies..."
+command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found"; exit 1; }
+command -v mksquashfs >/dev/null 2>&1 || { echo "ERROR: mksquashfs not found (install squashfs-tools)"; exit 1; }
+command -v tar >/dev/null 2>&1 || { echo "ERROR: tar not found"; exit 1; }
+echo "All dependencies satisfied."
+"""
+
+[tasks.help]
+description = "Show available tasks"
+run = """
+echo "Flatcar System Extensions Build System"
+echo ""
+echo "Available tasks:"
+echo "  mise run build           - Build the etcd sysext (default)"
+echo "  mise run clean           - Remove generated sysext images"
+echo "  mise run list-versions   - List available etcd versions"
+echo "  mise run install         - Install built sysext to /opt/extensions"
+echo "  mise run check           - Check build dependencies"
+echo ""
+echo "Environment variables:"
+echo "  VERSION=${VERSION}    - Version to build"
+echo "  ARCH=${ARCH}          - Architecture (x86-64, arm64)"
+echo "  OUTPUT_DIR=${OUTPUT_DIR} - Output directory"
+echo ""
+echo "Examples:"
+echo "  VERSION=v3.5.21 ARCH=x86-64 mise run build"
+echo "  mise run list-versions"
+"""

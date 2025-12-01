@@ -1,0 +1,14 @@
+{
+  "name": "etcd",
+  "version": "v3.5.21",
+  "generated_at": "2025-12-01T05:19:56Z",
+  "artifacts": [
+    {
+      "architecture": "x86-64",
+      "file": "etcd-v3.5.21-x86-64.raw",
+      "size_bytes": 20946944,
+      "sha256": "53d0d50b5c64ed2b5a1ed34ee57d571e3e8403420ac6ee7f83fd9abde290b64a"
+    }
+
+  ]
+}

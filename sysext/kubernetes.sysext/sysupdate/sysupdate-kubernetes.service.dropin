@@ -1,0 +1,8 @@
+# Drop-in for systemd-sysupdate.service to handle kubernetes extension updates
+# Place this file at: /etc/systemd/system/systemd-sysupdate.service.d/kubernetes.conf
+
+[Service]
+ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/kubernetes.raw > /tmp/kubernetes"
+ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C kubernetes update
+ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/kubernetes.raw > /tmp/kubernetes-new"
+ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/kubernetes /tmp/kubernetes-new; then touch /run/reboot-required; fi"

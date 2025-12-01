@@ -1,0 +1,23 @@
+# yamlfix configuration
+# Use block style for arrays (not inline)
+sequence_style: block_style
+
+# Keep quotes when needed
+quote_basic_values: false
+quote_keys_and_basic_values: false
+
+# Indentation
+indent_mapping: 2
+indent_sequence: 2
+indent_offset: 2
+
+# Line length
+line_length: 120
+
+# Comments
+allow_duplicate_keys: false
+preserve_quotes: true
+
+# Other settings
+explicit_start: false
+explicit_end: false

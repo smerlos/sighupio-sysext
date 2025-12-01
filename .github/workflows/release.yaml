@@ -1,0 +1,365 @@
+---
+name: Release System Extensions
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Force build all extensions
+        type: boolean
+        default: false
+env:
+  SQUASHFS_VERSION: 4.6.1
+  YQ_VERSION: v4.40.5
+permissions:
+  contents: write
+  packages: write
+  security-events: write
+jobs:
+  # ============================================================================
+  # STAGE 1: Detect which extensions need to be built
+  # ============================================================================
+  detect-builds:
+    name: 🔍 Detect Builds Needed
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.dispatcher.outputs.matrix }}
+      has_builds: ${{ steps.dispatcher.outputs.has_builds }}
+      extensions_list: ${{ steps.dispatcher.outputs.extensions_list }}
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 🔍 Detect changed extensions
+        id: changes
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            sysext/**
+            release_build_versions.txt
+      - name: 📊 Run release dispatcher
+        id: dispatcher
+        env:
+          FORCE_BUILD: ${{ github.event.inputs.force_build || 'false' }}
+          CHANGED_FILES: ${{ steps.changes.outputs.all_changed_files }}
+        run: |
+          # Determine if we should check releases or force build
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            echo "🔨 Force build enabled"
+            matrix=$(./release_dispatcher.sh --output-format github-matrix --no-check-releases)
+          else
+            matrix=$(./release_dispatcher.sh --output-format github-matrix)
+          fi
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+          # Check if there are any builds needed
+          count=$(echo "$matrix" | jq '.extension | length')
+          if [[ $count -gt 0 ]]; then
+            echo "has_builds=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Found $count extension(s) that need building"
+
+            # Create comma-separated list for summary
+            extensions=$(echo "$matrix" | jq -r '.extension[] | "\(.name)@\(.version)"' | paste -sd "," -)
+            echo "extensions_list=${extensions}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  No extensions need building"
+            echo "extensions_list=" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ============================================================================
+  # STAGE 2: Build extensions for all architectures
+  # ============================================================================
+  build-extensions:
+    name: 🏗️ Build ${{ matrix.extension.name }} ${{ matrix.extension.version }}
+    runs-on: ubuntu-24.04
+    needs: [detect-builds]
+    if: needs.detect-builds.outputs.has_builds == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.detect-builds.outputs.matrix) }}
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: 🌐 Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: |
+            arm64
+            amd64
+      - name: 📦 Cache build dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            /usr/local/bin/yq
+          key: build-deps-${{ runner.os }}-${{ env.YQ_VERSION }}
+          restore-keys: |
+            build-deps-${{ runner.os }}-
+      - name: 🔧 Install build dependencies
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: |
+            squashfs-tools
+            jq
+          version: 1.0
+      - name: 📥 Install yq
+        uses: mikefarah/yq@v4.40.5
+      - name: 🔨 Build extension for all architectures
+        env:
+          EXTENSION_NAME: ${{ matrix.extension.name }}
+          EXTENSION_VERSION: ${{ matrix.extension.version }}
+        run: |
+          ./release.sh \
+            --name "${EXTENSION_NAME}" \
+            --version "${EXTENSION_VERSION}" \
+            --arch all \
+            --output-dir release/
+      - name: 📊 Generate extension metadata
+        env:
+          EXTENSION_NAME: ${{ matrix.extension.name }}
+          EXTENSION_VERSION: ${{ matrix.extension.version }}
+        run: |
+          ./release_meta.sh \
+            --mode extension \
+            --name "${EXTENSION_NAME}" \
+            --version "${EXTENSION_VERSION}" \
+            --release-dir release/
+      - name: 🔒 Run Trivy vulnerability scan (x86-64)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: rootfs
+          scan-ref: release/x86-64/
+          format: sarif
+          output: trivy-results-${{ matrix.extension.name }}-x86-64.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+        continue-on-error: true
+      - name: 🔒 Run Trivy vulnerability scan (arm64)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: rootfs
+          scan-ref: release/arm64/
+          format: sarif
+          output: trivy-results-${{ matrix.extension.name }}-arm64.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+        continue-on-error: true
+      - name: 📤 Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: |
+            trivy-results-${{ matrix.extension.name }}-x86-64.sarif
+            trivy-results-${{ matrix.extension.name }}-arm64.sarif
+          category: ${{ matrix.extension.name }}
+        continue-on-error: true
+        if: github.event_name != 'pull_request'
+      - name: 📤 Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.extension.name }}-${{ matrix.extension.version }}-artifacts
+          path: |
+            release/**/*.raw
+            release/**/SHA256SUMS.*
+            release/**/*-metadata.json
+          retention-days: 5
+          compression-level: 0
+          if-no-files-found: error
+
+  # ============================================================================
+  # STAGE 3: Create GitHub Releases
+  # ============================================================================
+  create-releases:
+    name: 📦 Create Release for ${{ matrix.extension.name }}
+    runs-on: ubuntu-latest
+    needs: [detect-builds, build-extensions]
+    if: |
+      needs.detect-builds.outputs.has_builds == 'true' &&
+      github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.detect-builds.outputs.matrix) }}
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+      - name: 📥 Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.extension.name }}-${{ matrix.extension.version }}-artifacts
+          path: release/
+      - name: 📋 Generate release notes
+        id: release_notes
+        env:
+          EXTENSION_NAME: ${{ matrix.extension.name }}
+          EXTENSION_VERSION: ${{ matrix.extension.version }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## ${{ matrix.extension.name }} ${{ matrix.extension.version }}
+          System extension for Flatcar Container Linux.
+
+          ### 📦 Architectures
+          - x86-64 (amd64)
+          - arm64 (aarch64)
+
+          ### 📥 Installation
+          Download the appropriate `.raw` file for your architecture:
+          ```bash
+          # x86-64 / amd64
+          wget https://github.com/${REPO}/releases/download/${EXTENSION_NAME}-${EXTENSION_VERSION}/${EXTENSION_NAME}-${EXTENSION_VERSION}-x86-64.raw
+          sudo mkdir -p /var/lib/extensions
+          sudo mv ${EXTENSION_NAME}-${EXTENSION_VERSION}-x86-64.raw /var/lib/extensions/${EXTENSION_NAME}.raw
+          sudo systemd-sysext refresh
+          ```
+
+          ### ✅ Verification
+          SHA256 checksums are provided in the release assets:
+          ```bash
+          # Download checksum file
+          wget https://github.com/${REPO}/releases/download/${EXTENSION_NAME}-${EXTENSION_VERSION}/SHA256SUMS.${EXTENSION_NAME}
+
+          # Verify
+          sha256sum -c SHA256SUMS.${EXTENSION_NAME}
+          ```
+
+          ### 📚 Documentation
+          See the [extension README](https://github.com/${REPO}/tree/main/sysext/${EXTENSION_NAME}.sysext#readme) for:
+          - Detailed configuration
+          - Butane/Ignition examples
+          - Troubleshooting guide
+          - Integration examples
+          ---
+          🤖 **Automated Release** | Built by [GitHub Actions](${SERVER_URL}/${REPO}/actions/runs/${RUN_ID})
+          EOF
+      - name: 🚀 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ matrix.extension.name }}-${{ matrix.extension.version }}
+          name: ${{ matrix.extension.name }} ${{ matrix.extension.version }}
+          body_path: release-notes.md
+          files: |
+            release/**/*.raw
+            release/**/SHA256SUMS.*
+            release/**/*-metadata.json
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+
+  # ============================================================================
+  # STAGE 4: Update global metadata
+  # ============================================================================
+  update-global-metadata:
+    name: 📊 Update Global Metadata
+    runs-on: ubuntu-latest
+    needs: [detect-builds, build-extensions, create-releases]
+    if: |
+      needs.detect-builds.outputs.has_builds == 'true' &&
+      github.event_name != 'pull_request'
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: 📥 Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: 🔄 Reorganize artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs').promises;
+            const path = require('path');
+            async function reorganize(dir, targetDir) {
+              const entries = await fs.readdir(dir, { withFileTypes: true });
+              for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  await reorganize(fullPath, targetDir);
+                } else if (entry.name.endsWith('.raw') ||
+                           entry.name.startsWith('SHA256SUMS.') ||
+                           entry.name.endsWith('-metadata.json')) {
+                  const relativePath = fullPath.replace(/^artifacts\/[^\/]+\//, '');
+                  const targetPath = path.join(targetDir, relativePath);
+                  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+                  await fs.copyFile(fullPath, targetPath);
+                  console.log(`Copied: ${fullPath} -> ${targetPath}`);
+                }
+              }
+            }
+            await reorganize('artifacts', 'release');
+      - name: 📊 Generate global metadata
+        run: |
+          ./release_meta.sh \
+            --mode global \
+            --release-dir release/
+      - name: 🌳 Update releases branch
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update release metadata [skip ci]'
+          branch: releases
+          create_branch: true
+          file_pattern: metadata/*.json
+          commit_user_name: github-actions[bot]
+          commit_user_email: github-actions[bot]@users.noreply.github.com
+          commit_author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+          push_options: --force
+
+  # ============================================================================
+  # STAGE 5: Build summary
+  # ============================================================================
+  summary:
+    name: 📋 Build Summary
+    runs-on: ubuntu-latest
+    needs:
+      - detect-builds
+      - build-extensions
+      - create-releases
+      - update-global-metadata
+    if: always()
+    steps:
+      - name: 📊 Generate build summary
+        uses: actions/github-script@v7
+        env:
+          HAS_BUILDS: ${{ needs.detect-builds.outputs.has_builds }}
+          MATRIX: ${{ needs.detect-builds.outputs.matrix }}
+          BUILD_STATUS: ${{ needs.build-extensions.result }}
+          RELEASE_STATUS: ${{ needs.create-releases.result }}
+          METADATA_STATUS: ${{ needs.update-global-metadata.result }}
+        with:
+          script: |-
+            const hasBuild = process.env.HAS_BUILDS === 'true';
+            const matrix = process.env.MATRIX ? JSON.parse(process.env.MATRIX) : { extension: [] };
+            let summary = '## 🏗️ Release Build Summary\n\n';
+            if (hasBuild) {
+              const extensions = matrix.extension || [];
+              summary += `### ✅ Built ${extensions.length} Extension(s)\n\n`;
+              summary += '| Extension | Version | Status |\n';
+              summary += '|-----------|---------|--------|\n';
+              for (const ext of extensions) {
+                const status = process.env.BUILD_STATUS === 'success' ? '✅' : '❌';
+                summary += `| ${ext.name} | ${ext.version} | ${status} |\n`;
+              }
+              summary += '\n### 📦 Pipeline Stages\n\n';
+              summary += `- Build: ${process.env.BUILD_STATUS === 'success' ? '✅ Success' : '❌ Failed'}\n`;
+              summary += `- Releases: ${process.env.RELEASE_STATUS === 'success' ? '✅ Success' : '❌ Failed'}\n`;
+              summary += `- Metadata: ${process.env.METADATA_STATUS === 'success' ? '✅ Success' : '❌ Failed'}\n`;
+            } else {
+              summary += 'ℹ️ No builds were necessary\n\n';
+              summary += 'All configured extensions already have releases.\n';
+            }
+            summary += '\n---\n';
+            summary += `[View Releases](https://github.com/${context.repo.owner}/${context.repo.repo}/releases)\n`;
+            await core.summary.addRaw(summary).write();

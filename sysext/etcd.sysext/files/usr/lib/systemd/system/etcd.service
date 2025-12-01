@@ -1,0 +1,27 @@
+[Unit]
+Description=etcd
+Documentation=https://github.com/etcd-io/etcd
+Conflicts=etcd-member.service
+Conflicts=etcd2.service
+
+[Service]
+User=etcd
+Group=etcd
+# Environment configuration from /etc/etcd/etcd.env
+EnvironmentFile=/etc/etcd/etcd.env
+
+# Main process - all configuration via environment variables
+ExecStart=/usr/bin/etcd
+
+Type=notify
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=5s
+
+LimitNOFILE=65536
+Nice=-10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+[Install]
+WantedBy=multi-user.target

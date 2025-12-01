@@ -1,0 +1,179 @@
+variant: flatcar
+version: 1.1.0
+
+# ==============================================================================
+# KEEPALIVED SYSTEM EXTENSION - BUTANE CONFIGURATION
+# ==============================================================================
+
+storage:
+  directories:
+    # keepalived configuration directory
+    - path: /etc/keepalived
+      mode: 0755
+
+    # sysext storage directory
+    - path: /opt/extensions/keepalived
+      mode: 0755
+
+    # sysupdate config directory
+    - path: /etc/sysupdate.keepalived.d
+      mode: 0755
+
+    # Health check scripts directory
+    - path: /usr/local/bin
+      mode: 0755
+
+  files:
+    # ===========================================================================
+    # SYSTEM EXTENSION IMAGE
+    # ===========================================================================
+    - path: /opt/extensions/keepalived/keepalived-v2.3.4-x86-64.raw
+      mode: 0644
+      contents:
+        source: https://github.com/smerlos/sighupio-sysext/releases/download/keepalived-v2.3.4/keepalived-v2.3.4-x86-64.raw
+
+    # ===========================================================================
+    # SYSUPDATE CONFIGURATION
+    # ===========================================================================
+    - path: /etc/sysupdate.keepalived.d/keepalived.conf
+      mode: 0644
+      contents:
+        inline: |
+          [Transfer]
+          Verify=false
+
+          [Source]
+          Type=url-file
+          Path=https://github.com/smerlos/sighupio-sysext/releases/download/
+          MatchPattern=keepalived-v@v-%a.raw
+
+          [Target]
+          InstancesMax=3
+          Type=regular-file
+          Path=/opt/extensions/keepalived
+          CurrentSymlink=/etc/extensions/keepalived.raw
+
+    # ===========================================================================
+    # KEEPALIVED CONFIGURATION (Kubernetes API HA)
+    # ===========================================================================
+    - path: /etc/keepalived/keepalived.conf
+      mode: 0644
+      contents:
+        inline: |
+          # keepalived configuration for Kubernetes API Server HA
+          global_defs {
+            router_id K8S_API_LB
+            vrrp_skip_check_adv_addr
+            vrrp_strict
+            vrrp_garp_interval 0
+            vrrp_gna_interval 0
+            enable_script_security
+          }
+
+          vrrp_script check_apiserver {
+            script "/usr/local/bin/check-apiserver.sh"
+            interval 3
+            timeout 10
+            fall 2
+            rise 2
+            weight -2
+          }
+
+          vrrp_instance kube_api_server {
+            state MASTER
+            interface eth0
+            virtual_router_id 51
+            priority 100
+            advert_int 1
+
+            authentication {
+              auth_type PASS
+              auth_pass k8s_api_secret_change_me
+            }
+
+            virtual_ipaddress {
+              192.168.1.100/24 dev eth0
+            }
+
+            track_script {
+              check_apiserver
+            }
+
+            notify_master "/usr/local/bin/keepalived-notify.sh MASTER"
+            notify_backup "/usr/local/bin/keepalived-notify.sh BACKUP"
+            notify_fault  "/usr/local/bin/keepalived-notify.sh FAULT"
+          }
+
+    # ===========================================================================
+    # HEALTH CHECK SCRIPT
+    # ===========================================================================
+    - path: /usr/local/bin/check-apiserver.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # Health check script for Kubernetes API server
+
+          APISERVER_VIP=${APISERVER_VIP:-192.168.1.100}
+          APISERVER_PORT=${APISERVER_PORT:-6443}
+
+          # Check if kube-apiserver is responding
+          curl -sfk https://${APISERVER_VIP}:${APISERVER_PORT}/healthz > /dev/null 2>&1
+          exit $?
+
+    # ===========================================================================
+    # NOTIFICATION SCRIPT
+    # ===========================================================================
+    - path: /usr/local/bin/keepalived-notify.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # Notification script for keepalived state changes
+
+          TYPE=$1
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+          HOSTNAME=$(hostname)
+
+          # Log state change
+          logger -t keepalived "[$TIMESTAMP] $HOSTNAME transitioned to $TYPE state"
+
+          # You can add additional actions here:
+          # - Send notifications (email, Slack, etc.)
+          # - Update external monitoring systems
+          # - Trigger custom scripts
+
+          case $TYPE in
+            MASTER)
+              logger -t keepalived "Became MASTER - Virtual IP is active on this node"
+              ;;
+            BACKUP)
+              logger -t keepalived "Became BACKUP - Standby mode"
+              ;;
+            FAULT)
+              logger -t keepalived "Entered FAULT state - Check configuration"
+              ;;
+          esac
+
+  links:
+    # Symlink to activate the system extension
+    - path: /etc/extensions/keepalived.raw
+      target: /opt/extensions/keepalived/keepalived-v2.3.4-x86-64.raw
+      hard: false
+
+systemd:
+  units:
+    # Enable keepalived service (provided by sysext)
+    - name: keepalived.service
+      enabled: true
+
+    # Sysupdate drop-in for automatic extension updates
+    - name: systemd-sysupdate.service
+      dropins:
+        - name: keepalived.conf
+          contents: |
+            [Service]
+            ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/keepalived.raw > /tmp/keepalived"
+            ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C keepalived update
+            ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/keepalived.raw > /tmp/keepalived-new"
+            ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/keepalived /tmp/keepalived-new; then touch /run/reboot-required; fi"

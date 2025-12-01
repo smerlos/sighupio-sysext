@@ -1,0 +1,169 @@
+variant: flatcar
+version: 1.1.0
+
+# ==============================================================================
+# KUBERNETES SYSTEM EXTENSION - BUTANE CONFIGURATION
+# ==============================================================================
+
+storage:
+  directories:
+    # Kubernetes configuration directory
+    - path: /etc/kubernetes
+      mode: 0755
+
+    # Kubernetes manifests directory
+    - path: /etc/kubernetes/manifests
+      mode: 0755
+
+    # Kubernetes PKI directory
+    - path: /etc/kubernetes/pki
+      mode: 0700
+
+    # kubelet data directory
+    - path: /var/lib/kubelet
+      mode: 0755
+
+    # CNI configuration directory
+    - path: /etc/cni/net.d
+      mode: 0755
+
+    # sysext storage directory
+    - path: /opt/extensions/kubernetes
+      mode: 0755
+
+    # sysupdate config directory
+    - path: /etc/sysupdate.kubernetes.d
+      mode: 0755
+
+  files:
+    # ===========================================================================
+    # SYSTEM EXTENSION IMAGE
+    # ===========================================================================
+    - path: /opt/extensions/kubernetes/kubernetes-v1.32.0-x86-64.raw
+      mode: 0644
+      contents:
+        source: https://github.com/smerlos/sighupio-sysext/releases/download/kubernetes-v1.32.0/kubernetes-v1.32.0-x86-64.raw
+
+    # ===========================================================================
+    # SYSUPDATE CONFIGURATION
+    # ===========================================================================
+    - path: /etc/sysupdate.kubernetes.d/kubernetes.conf
+      mode: 0644
+      contents:
+        inline: |
+          [Transfer]
+          Verify=false
+
+          [Source]
+          Type=url-file
+          Path=https://github.com/smerlos/sighupio-sysext/releases/download/
+          MatchPattern=kubernetes-v@v-%a.raw
+
+          [Target]
+          InstancesMax=3
+          Type=regular-file
+          Path=/opt/extensions/kubernetes
+          CurrentSymlink=/etc/extensions/kubernetes.raw
+
+    # ===========================================================================
+    # KUBELET CONFIGURATION
+    # ===========================================================================
+    - path: /var/lib/kubelet/config.yaml
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+          containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+          resolvConf: /run/systemd/resolve/resolv.conf
+          clusterDNS:
+            - 10.96.0.10
+          clusterDomain: cluster.local
+          authentication:
+            anonymous:
+              enabled: false
+            webhook:
+              enabled: true
+            x509:
+              clientCAFile: /etc/kubernetes/pki/ca.crt
+          authorization:
+            mode: Webhook
+          serverTLSBootstrap: true
+          rotateCertificates: true
+          tlsCipherSuites:
+            - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+            - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+            - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+            - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+
+    # ===========================================================================
+    # KUBEADM CONFIGURATION (for cluster init)
+    # ===========================================================================
+    - path: /etc/kubernetes/kubeadm-config.yaml
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+            kubeletExtraArgs:
+              cgroup-driver: systemd
+              container-runtime-endpoint: unix:///run/containerd/containerd.sock
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.32.0
+          controlPlaneEndpoint: "LOAD_BALANCER_DNS:6443"
+          networking:
+            podSubnet: 10.244.0.0/16
+            serviceSubnet: 10.96.0.0/12
+          apiServer:
+            certSANs:
+              - "LOAD_BALANCER_IP"
+              - "LOAD_BALANCER_DNS"
+            extraArgs:
+              authorization-mode: "Node,RBAC"
+              enable-admission-plugins: "NodeRestriction"
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+          containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+
+  links:
+    # Symlink to activate the system extension
+    - path: /etc/extensions/kubernetes.raw
+      target: /opt/extensions/kubernetes/kubernetes-v1.32.0-x86-64.raw
+      hard: false
+
+systemd:
+  units:
+    # Ensure containerd starts before kubelet
+    - name: containerd.service
+      enabled: true
+
+    # Enable kubelet service (provided by sysext)
+    - name: kubelet.service
+      enabled: true
+      dropins:
+        - name: 10-kubeadm.conf
+          contents: |
+            [Service]
+            Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+            Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+            Environment="KUBELET_EXTRA_ARGS=--container-runtime-endpoint=unix:///run/containerd/containerd.sock"
+            ExecStart=
+            ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_EXTRA_ARGS
+
+    # Sysupdate drop-in for automatic extension updates
+    - name: systemd-sysupdate.service
+      dropins:
+        - name: kubernetes.conf
+          contents: |
+            [Service]
+            ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/kubernetes.raw > /tmp/kubernetes"
+            ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C kubernetes update
+            ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/kubernetes.raw > /tmp/kubernetes-new"
+            ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/kubernetes /tmp/kubernetes-new; then touch /run/reboot-required; fi"

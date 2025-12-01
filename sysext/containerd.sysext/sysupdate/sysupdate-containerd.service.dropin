@@ -1,0 +1,8 @@
+# Drop-in for systemd-sysupdate.service to handle containerd extension updates
+# Place this file at: /etc/systemd/system/systemd-sysupdate.service.d/containerd.conf
+
+[Service]
+ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/containerd.raw > /tmp/containerd"
+ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C containerd update
+ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/containerd.raw > /tmp/containerd-new"
+ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/containerd /tmp/containerd-new; then touch /run/reboot-required; fi"

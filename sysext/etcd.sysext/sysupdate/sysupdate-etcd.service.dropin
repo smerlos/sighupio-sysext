@@ -1,0 +1,8 @@
+# Drop-in for systemd-sysupdate.service to handle etcd extension updates
+# Place this file at: /etc/systemd/system/systemd-sysupdate.service.d/etcd.conf
+
+[Service]
+ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/etcd.raw > /tmp/etcd"
+ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C etcd update
+ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/etcd.raw > /tmp/etcd-new"
+ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/etcd /tmp/etcd-new; then touch /run/reboot-required; fi"

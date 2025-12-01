@@ -1,0 +1,108 @@
+variant: flatcar
+version: 1.1.0
+
+# ==============================================================================
+# CONTAINERD SYSTEM EXTENSION - BUTANE CONFIGURATION
+# ==============================================================================
+
+storage:
+  directories:
+    # containerd configuration directory
+    - path: /etc/containerd
+      mode: 0755
+
+    # containerd data directory
+    - path: /var/lib/containerd
+      mode: 0755
+
+    # sysext storage directory
+    - path: /opt/extensions/containerd
+      mode: 0755
+
+    # sysupdate config directory
+    - path: /etc/sysupdate.containerd.d
+      mode: 0755
+
+  files:
+    # ===========================================================================
+    # SYSTEM EXTENSION IMAGE
+    # ===========================================================================
+    - path: /opt/extensions/containerd/containerd-2.2.0-x86-64.raw
+      mode: 0644
+      contents:
+        source: https://github.com/smerlos/sighupio-sysext/releases/download/containerd-2.2.0/containerd-2.2.0-x86-64.raw
+
+    # ===========================================================================
+    # SYSUPDATE CONFIGURATION
+    # ===========================================================================
+    - path: /etc/sysupdate.containerd.d/containerd.conf
+      mode: 0644
+      contents:
+        inline: |
+          [Transfer]
+          Verify=false
+
+          [Source]
+          Type=url-file
+          Path=https://github.com/smerlos/sighupio-sysext/releases/download/
+          MatchPattern=containerd-@v-%a.raw
+
+          [Target]
+          InstancesMax=3
+          Type=regular-file
+          Path=/opt/extensions/containerd
+          CurrentSymlink=/etc/extensions/containerd.raw
+
+    # ===========================================================================
+    # CONTAINERD CONFIGURATION
+    # ===========================================================================
+    - path: /etc/containerd/config.toml
+      mode: 0644
+      contents:
+        inline: |
+          # containerd configuration for Kubernetes
+          version = 2
+
+          [plugins."io.containerd.grpc.v1.cri"]
+            sandbox_image = "registry.k8s.io/pause:3.9"
+
+          [plugins."io.containerd.grpc.v1.cri".containerd]
+            default_runtime_name = "runc"
+
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+            runtime_type = "io.containerd.runc.v2"
+
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+
+          [plugins."io.containerd.grpc.v1.cri".cni]
+            bin_dir = "/usr/local/bin/cni"
+            conf_dir = "/etc/cni/net.d"
+
+          [plugins."io.containerd.grpc.v1.cri".registry]
+            [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+              [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+                endpoint = ["https://registry-1.docker.io"]
+
+  links:
+    # Symlink to activate the system extension
+    - path: /etc/extensions/containerd.raw
+      target: /opt/extensions/containerd/containerd-2.2.0-x86-64.raw
+      hard: false
+
+systemd:
+  units:
+    # Enable containerd service (provided by sysext)
+    - name: containerd.service
+      enabled: true
+
+    # Sysupdate drop-in for automatic extension updates
+    - name: systemd-sysupdate.service
+      dropins:
+        - name: containerd.conf
+          contents: |
+            [Service]
+            ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/containerd.raw > /tmp/containerd"
+            ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C containerd update
+            ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/containerd.raw > /tmp/containerd-new"
+            ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/containerd /tmp/containerd-new; then touch /run/reboot-required; fi"

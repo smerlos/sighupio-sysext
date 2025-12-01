@@ -1,0 +1,8 @@
+# System Extensions Build Configuration
+# Format: <extension> <version>
+# Versions must match exactly what upstream uses
+
+etcd v3.5.21
+containerd 2.2.0
+kubernetes v1.32.0
+keepalived v2.3.4
