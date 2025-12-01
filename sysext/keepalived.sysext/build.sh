@@ -44,26 +44,8 @@ cd /opt/keepalived
 git checkout $version
 ./autogen.sh
 
-# Detect architecture for cross-compilation
-TARGET_ARCH=$(uname -m)
-HOST_FLAG=""
-CACHE_VARS=""
-
-case "$TARGET_ARCH" in
-  aarch64|arm64)
-    HOST_FLAG="--host=aarch64-linux-musl"
-    # Cache variables for cross-compilation to avoid runtime tests
-    CACHE_VARS="ac_cv_func_fork_works=yes ac_cv_func_vfork_works=yes ac_cv_func_malloc_0_nonnull=yes ac_cv_func_realloc_0_nonnull=yes"
-    ;;
-  x86_64|amd64)
-    HOST_FLAG="--host=x86_64-linux-musl"
-    ;;
-esac
-
-# Run configure with appropriate flags
-env $CACHE_VARS \
-  CFLAGS='-static -s' LDFLAGS=-static \
-  ./configure $HOST_FLAG --disable-dynamic-linking \
+CFLAGS='-static -s' LDFLAGS=-static \
+     ./configure  --disable-dynamic-linking \
     --prefix=/usr \
     --exec-prefix=/usr \
     --bindir=/usr/bin \
@@ -75,10 +57,7 @@ env $CACHE_VARS \
     --enable-bfd \
     --enable-nftables \
     --enable-regex \
-    --enable-json \
-    --with-init=systemd \
-    --enable-vrrp \
-    --enable-libnl-dynamic
+    --enable-json  --with-init=systemd --enable-vrrp --enable-libnl-dynamic
 
 make
 make DESTDIR=/install_root install
