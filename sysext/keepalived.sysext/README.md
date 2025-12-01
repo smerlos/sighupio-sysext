@@ -7,7 +7,7 @@ This directory contains the build configuration for a keepalived systemd-sysext 
 ```
 keepalived.sysext/
 ├── create.sh                           # Build script (bakery-compatible)
-├── build.sh                            # Compilation script (Alpine-based)
+├── build.sh.old                        # [ARCHIVED] Previous compilation script
 ├── files/
 │   └── usr/
 │       ├── sbin/                       # keepalived binary (populated during build)
@@ -28,23 +28,33 @@ keepalived.sysext/
 
 ### Prerequisites
 
-- `docker` - for Alpine-based compilation
+- `curl` - for downloading Alpine packages
+- `tar` - for extracting APK packages
 - `mksquashfs` - from squashfs-tools package
 
 ### Build Process
 
-keepalived is compiled from source using Alpine Linux in a Docker container to produce a static binary.
+keepalived binaries are downloaded from Alpine Linux edge repository packages instead of being compiled from source. This approach:
+- ✅ Avoids QEMU compilation issues on ARM64
+- ✅ Provides faster builds (~10 seconds vs ~10 minutes)
+- ✅ Uses well-tested Alpine packages (version 2.3.4-r1)
+- ✅ Works reliably on all architectures
 
 ```bash
 # Build with latest version for x86-64
 ../../../bakery.sh create keepalived v2.3.4 x86-64
 
-# Build for ARM64 (requires QEMU)
+# Build for ARM64 (no QEMU issues!)
 ../../../bakery.sh create keepalived v2.3.4 arm64
+
+# Build for all architectures
+../../../release.sh --name keepalived --version v2.3.4 --arch all
 
 # List available versions
 ../../../bakery.sh list keepalived
 ```
+
+**Note**: The extension uses keepalived 2.3.4-r1 from Alpine edge repository. If you need a different version, the Alpine package must be available in the edge repository.
 
 ### Output
 

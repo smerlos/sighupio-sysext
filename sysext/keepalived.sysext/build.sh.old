@@ -44,7 +44,7 @@ cd /opt/keepalived
 git checkout $version
 ./autogen.sh
 
-CFLAGS='-static -s' LDFLAGS=-static \
+CFLAGS='-static -O1' LDFLAGS=-static \
      ./configure  --disable-dynamic-linking \
     --prefix=/usr \
     --exec-prefix=/usr \
@@ -59,7 +59,8 @@ CFLAGS='-static -s' LDFLAGS=-static \
     --enable-regex \
     --enable-json  --with-init=systemd --enable-vrrp --enable-libnl-dynamic
 
-make
+# Use single-threaded make to avoid QEMU emulation issues
+make -j1
 make DESTDIR=/install_root install
 
 rm -rf /install_root/usr/share \
